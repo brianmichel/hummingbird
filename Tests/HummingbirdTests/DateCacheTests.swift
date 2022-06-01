@@ -16,6 +16,7 @@ import Foundation
 @testable import Hummingbird
 import HummingbirdXCT
 import XCTest
+import NIOConcurrencyHelpers
 
 class HummingbirdDateTests: XCTestCase {
     func testRFC1123Renderer() {
@@ -53,7 +54,7 @@ class HummingbirdDateTests: XCTestCase {
         defer { app.XCTStop() }
 
         let date = Date()
-        var diff = false
+        let diff = NIOAtomic.makeAtomic(value: false)
 
         let rt = (1..<System.coreCount).map { _ in
             return app.eventLoopGroup.next().submit {
@@ -61,14 +62,14 @@ class HummingbirdDateTests: XCTestCase {
                 for _ in 0..<100_000 {
                     let d2 = HBDateCache.getDateCache(on: app.eventLoopGroup.next()).currentDate
                     if d2 != d {
-                        diff = true
+                        diff.store(true)
                     }
                     d = d2
                 }
             }
         }
         _ = try EventLoopFuture.whenAllSucceed(rt, on: app.eventLoopGroup.next()).wait()
-        print(diff)
+        print(diff.load())
         print(-date.timeIntervalSinceNow)
     }
 }

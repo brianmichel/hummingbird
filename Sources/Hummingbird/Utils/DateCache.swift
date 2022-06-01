@@ -20,7 +20,7 @@ import NIOPosix
 // public typealias DateValue = ManagedAtomicReference<String>
 public typealias DateValue = DateValueLock
 public typealias HBDateCache = HBUnsafeDateCache
-// public typealias HBDateCache = HBDateCacheEV
+//public typealias HBDateCache = HBDateCacheEV
 public struct DateValueString {
     var _value: String
 
@@ -35,7 +35,7 @@ public struct DateValueString {
 }
 
 public struct DateValueLock {
-    var _value: String
+    private var _value: String
     var lock = Lock()
 
     init(_ value: String) {
@@ -43,12 +43,22 @@ public struct DateValueLock {
     }
 
     var value: String {
-        get { return self.lock.withLock { self._value } }
-        set { self.lock.withLock { self._value = newValue } }
+        get { 
+            var s: String?
+            self.lock.withLock { 
+                s = self._value 
+            }
+            return s!
+        }
+        set { 
+            self.lock.withLock { 
+                self._value = newValue 
+            }
+        }
     }
 }
 
-public final class ManagedAtomicReference<Value: Sendable>: @unchecked Sendable {
+/*public final class ManagedAtomicReference<Value: Sendable>: @unchecked Sendable {
     private var valueAtomic: ManagedAtomic<_Reference>
 
     final class _Reference: AtomicReference, Sendable {
@@ -67,12 +77,13 @@ public final class ManagedAtomicReference<Value: Sendable>: @unchecked Sendable 
         get { self.valueAtomic.load(ordering: .relaxed).value! }
         set { self.valueAtomic.store(.init(value: newValue), ordering: .releasing) }
     }
-}
+}*/
 
 public final class HBUnsafeDateCache {
-    public var _currentDate: DateValue
+    public var _currentDate: String
+    private var lock = Lock()
     /// Current formatted date
-    public var currentDate: String { return self._currentDate.value }
+    public var currentDate: String { return lock.withLock { self._currentDate } }
 
     static var current: HBUnsafeDateCache?
 
@@ -91,7 +102,7 @@ public final class HBUnsafeDateCache {
 
     /// Initialize DateCache to run on a specific `EventLoop`
     private init(eventLoop: EventLoop) {
-        assert(eventLoop.inEventLoop)
+        //assert(eventLoop.inEventLoop)
         var timeVal = timeval.init()
         gettimeofday(&timeVal, nil)
         self._currentDate = .init(RFC1123DateFormatter.formatDate(timeVal.tv_sec))
@@ -111,7 +122,9 @@ public final class HBUnsafeDateCache {
 
     private func updateDate() {
         let epochTime = time(nil)
-        self._currentDate.value = RFC1123DateFormatter.formatDate(epochTime)
+        lock.withLock {
+            self._currentDate = RFC1123DateFormatter.formatDate(epochTime)
+        }
     }
 
     private var task: RepeatedTask!
