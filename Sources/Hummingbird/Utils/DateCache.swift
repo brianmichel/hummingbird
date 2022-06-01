@@ -17,9 +17,8 @@ import NIOConcurrencyHelpers
 import NIOCore
 import NIOPosix
 
-// public typealias DateValue = ManagedAtomicReference<String>
-public typealias DateValue = DateValueLock
-public typealias HBDateCache = HBUnsafeDateCache
+//public typealias HBDateCache = HBDateCacheAtomic
+public typealias HBDateCache = HBDateCacheLock
 //public typealias HBDateCache = HBDateCacheEV
 public struct DateValueString {
     var _value: String
@@ -34,31 +33,7 @@ public struct DateValueString {
     }
 }
 
-public struct DateValueLock {
-    private var _value: String
-    var lock = Lock()
-
-    init(_ value: String) {
-        self._value = value
-    }
-
-    var value: String {
-        get { 
-            var s: String?
-            self.lock.withLock { 
-                s = self._value 
-            }
-            return s!
-        }
-        set { 
-            self.lock.withLock { 
-                self._value = newValue 
-            }
-        }
-    }
-}
-
-/*public final class ManagedAtomicReference<Value: Sendable>: @unchecked Sendable {
+public final class ManagedAtomicReference<Value: Sendable>: @unchecked Sendable {
     private var valueAtomic: ManagedAtomic<_Reference>
 
     final class _Reference: AtomicReference, Sendable {
@@ -75,24 +50,23 @@ public struct DateValueLock {
 
     var value: Value {
         get { self.valueAtomic.load(ordering: .relaxed).value! }
-        set { self.valueAtomic.store(.init(value: newValue), ordering: .releasing) }
+        set { self.valueAtomic.store(.init(value: newValue), ordering: .relaxed) }
     }
-}*/
+}
 
-public final class HBUnsafeDateCache {
-    public var _currentDate: String
-    private var lock = Lock()
+public final class HBDateCacheAtomic {
+    public var _currentDate: ManagedAtomicReference<String>
     /// Current formatted date
-    public var currentDate: String { return lock.withLock { self._currentDate } }
+    public var currentDate: String { return _currentDate.value }
 
-    static var current: HBUnsafeDateCache?
+    static var current: HBDateCacheAtomic?
 
     public static func InitDateCache(eventLoopGroup: EventLoopGroup) {
         Self.current = .init(eventLoop: eventLoopGroup.next())
     }
 
     /// return date cache for this thread. If one doesn't exist create one scheduled on EventLoop
-    public static func getDateCache(on eventLoop: EventLoop) -> HBUnsafeDateCache {
+    public static func getDateCache(on eventLoop: EventLoop) -> HBDateCacheAtomic {
         return self.current!
     }
 
@@ -122,9 +96,59 @@ public final class HBUnsafeDateCache {
 
     private func updateDate() {
         let epochTime = time(nil)
-        lock.withLock {
-            self._currentDate = RFC1123DateFormatter.formatDate(epochTime)
+        self._currentDate.value = RFC1123DateFormatter.formatDate(epochTime)
+    }
+
+    private var task: RepeatedTask!
+}
+
+public final class HBDateCacheLock {
+    private var _currentDate: String
+    private var lock = Lock()
+    /// Current formatted date
+    public var currentDate: String { 
+        get { return lock.withLock { _currentDate } }
+        set { lock.withLock { _currentDate = newValue } }
+    }
+
+    static var current: HBDateCacheLock?
+
+    public static func InitDateCache(eventLoopGroup: EventLoopGroup) {
+        Self.current = .init(eventLoop: eventLoopGroup.next())
+    }
+
+    /// return date cache for this thread. If one doesn't exist create one scheduled on EventLoop
+    public static func getDateCache(on eventLoop: EventLoop) -> HBDateCacheLock {
+        return self.current!
+    }
+
+    static func shutdownDateCaches(eventLoopGroup: EventLoopGroup) -> EventLoopFuture<Void> {
+        return Self.current!.shutdown(eventLoop: eventLoopGroup.next())
+    }
+
+    /// Initialize DateCache to run on a specific `EventLoop`
+    private init(eventLoop: EventLoop) {
+        //assert(eventLoop.inEventLoop)
+        var timeVal = timeval.init()
+        gettimeofday(&timeVal, nil)
+        self._currentDate = .init(RFC1123DateFormatter.formatDate(timeVal.tv_sec))
+
+        let millisecondsSinceLastSecond = Double(timeVal.tv_usec) / 1000.0
+        let millisecondsUntilNextSecond = Int64(1000.0 - millisecondsSinceLastSecond)
+        self.task = eventLoop.scheduleRepeatedTask(initialDelay: .milliseconds(millisecondsUntilNextSecond), delay: .seconds(1)) { _ in
+            self.updateDate()
         }
+    }
+
+    private func shutdown(eventLoop: EventLoop) -> EventLoopFuture<Void> {
+        let promise = eventLoop.makePromise(of: Void.self)
+        self.task.cancel(promise: promise)
+        return promise.futureResult
+    }
+
+    private func updateDate() {
+        let epochTime = time(nil)
+        self.currentDate = RFC1123DateFormatter.formatDate(epochTime)
     }
 
     private var task: RepeatedTask!
