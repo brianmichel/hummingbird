@@ -106,6 +106,7 @@ public final class HBApplication: HBExtensible {
             label: "Application", .sync(self.shutdownApplication)
         )
 
+        HBDateCache.InitDateCache(eventLoopGroup: self.eventLoopGroup)
         self.lifecycle.registerShutdown(
             label: "DateCache", .eventLoopFuture { HBDateCache.shutdownDateCaches(eventLoopGroup: self.eventLoopGroup) }
         )
